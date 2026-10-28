@@ -89,6 +89,17 @@ V8ConsoleMessageStorage 会重放，含对象内容），所以不需要常驻�
 
 前提：Node ≥ 22（插件跑子进程用；DSH 自带运行时满足）、本机有 Edge 或 Chrome。
 
+### 方式一：从 GitHub 安装（推荐）
+
+```powershell
+# 把插件装进 desktop profile（会写入依赖并加进 bundles）
+dsh plugin --profile desktop add "github:liangzz1998/dsh-web-devtools"
+
+# 重启 DeepSeek Harness 生效（启用 HMR 的 profile 保存配置即热加载）
+```
+
+### 方式二：本地源码 link（开发用）
+
 ```powershell
 # 1. 链接进 desktop profile 的 node_modules
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-web-devtools" `
@@ -96,7 +107,7 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\desktop\node_m
 
 # 2. 在 ~/.dsh/profiles/desktop/cordis.patch.yml 里挂载（见本仓库 cordis.patch.yml 的 insert 段）
 
-# 3. 重启 DeepSeek Harness 生效（启用 HMR 的 profile 保存配置即热加载）
+# 3. 重启 DeepSeek Harness 生效
 ```
 
 ## 配置

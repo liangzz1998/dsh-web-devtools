@@ -16,6 +16,14 @@
   ],
   "type": "module",
   "main": "lib/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liangzz1998/dsh-web-devtools.git"
+  },
+  "homepage": "https://github.com/liangzz1998/dsh-web-devtools",
+  "bugs": {
+    "url": "https://github.com/liangzz1998/dsh-web-devtools/issues"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./package.json": "./package.json"
