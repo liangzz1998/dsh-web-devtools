@@ -1,0 +1,41 @@
+{
+  "name": "dsh-web-devtools",
+  "version": "0.2.0",
+  "description": "把网页 F12 开发者工具里的东西接给 DeepSeek Harness 的 agent，服务于「看懂陌生网页」和「写网页自动化/爬虫脚本」：页面概览、元素定位器、操作时间线、登录态、网络、控制台、下载文件。基于 Chrome DevTools Protocol，零依赖，自带专用浏览器实例。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "devtools",
+    "cdp",
+    "chrome-devtools-protocol",
+    "console",
+    "dom",
+    "f12",
+    "web-debugging"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "tools",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node tests/e2e.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}
