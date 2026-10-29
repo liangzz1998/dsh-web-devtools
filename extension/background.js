@@ -73,6 +73,11 @@ async function attachTarget(tabId) {
     const message = String((error && error.message) || error)
     throw new Error('无法附加调试器：' + message + '（如果这个标签页开着 F12，请先关掉它，或换一个标签页）')
   }
+  // 预先启用常用 domain：这样事件从 attach 开始就持续进 hub 缓冲，
+  // 导航之后也能立刻读到新页面的 console（Runtime.enable 只回放一次）。
+  for (const method of ['Runtime.enable', 'Log.enable', 'Page.enable']) {
+    try { await chrome.debugger.sendCommand({ tabId: tab.id }, method, {}) } catch { /* ignore */ }
+  }
   try { await chrome.storage.local.set({ lastTabId: tab.id }) } catch { /* ignore */ }
   await pushTabs()
   return { tabId: tab.id, title: tab.title || '', url: tab.url || '' }

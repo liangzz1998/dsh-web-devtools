@@ -100,6 +100,24 @@ DSH 插件（lib/cdp.mjs 原样复用）
 
 也可以反过来：先让 agent 调 `devtools_live_attach`，它会自动接入你当前活动的标签页。
 
+### 页面跳转/导航之后还能读吗
+
+**同标签页内跳转不用断开重接**——`chrome.debugger` 附加的是「标签页」而不是某个页面文档：
+
+| 场景 | 读取能力 |
+|---|---|
+| 点了链接/按钮，**同一个标签页**整页跳转到网站另一个页面 | ✅ 会话跟着标签页走，直接继续读；新页面的 console 会重新收集 |
+| SPA 路由跳转（`pushState` / hash 变化） | ✅ 同一文档，完全不受影响 |
+| 点入口**新开了标签页/新窗口** | ✅ 默认 `followActiveTab: true`：下一次读取自动切到当前活动标签，旧会话自动断开，不用手动操作 |
+| 手动切到另一个标签页 | ✅ 同上，读取时自动跟过去 |
+| 标签页被关闭 / 跳到 `chrome://` 等特权页 | ⚠️ 会话失效；下一次 `target="current"` 会自动重新接入当前活动标签 |
+| 闲置超过 10 分钟 | ⚠️ hub 自动 detach（避免黄条一直挂着）；下次读取自动重新接入 |
+
+实现上 hub 会缓存每个标签页最近的控制台事件（并在主框架导航时清空旧页面的历史），
+所以「先报错、后读取」和「导航后立刻读新页面」都成立。
+
+> 扩展代码更新后，需要到 `edge://extensions` 点一下该扩展的「重新加载」才会生效。
+
 ### 限制（重要）
 
 - 接入时标签页顶部会出现 **「正在调试此标签页」** 黄条，这是 chrome.debugger 的正常提示；点黄条上的「取消」或 popup 里的「断开」即可结束
@@ -178,6 +196,7 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\desktop\node_m
 | `autoRecord` | `true` | 是否自动注入页面记录器 |
 | `hubPort` | `9335` | 扩展桥 hub 端口（扩展 popup 里可改） |
 | `autoStartHub` | `true` | 插件加载时是否自动拉起 hub |
+| `followActiveTab` | `true` | `target="current"` 时跟随当前活动标签页（换标签/新开页后自动切过去） |
 | `timeoutMs` | `60000` | 单次操作默认超时 |
 
 ---
@@ -195,7 +214,7 @@ tools/hub.mjs       扩展桥 hub：接扩展 WebSocket、代理成标准 CDP、
 tools/ws.mjs        零依赖 WebSocket 服务端实现（RFC 6455 子集）
 extension/          浏览器扩展（MV3）：chrome.debugger → hub
 tests/e2e.mjs       专用浏览器端到端测试（55 项断言）
-tests/extension-e2e.mjs 扩展桥端到端测试：真 Edge + --load-extension 读「当前页」（13 项断言）
+tests/extension-e2e.mjs 扩展桥端到端测试：真 Edge + --load-extension 读「当前页」（17 项断言）
 ```
 
 ## 测试
@@ -203,7 +222,7 @@ tests/extension-e2e.mjs 扩展桥端到端测试：真 Edge + --load-extension �
 ```powershell
 cd D:\dsh-plugins\dsh-web-devtools
 node tests/e2e.mjs           # 专用浏览器：55/55
-node tests/extension-e2e.mjs # 扩展桥读当前页：13/13（会自动起一个临时 Edge，不动你日常浏览器）
+node tests/extension-e2e.mjs # 扩展桥读当前页：17/17（会自动起一个临时 Edge，不动你日常浏览器）
 ```
 
 ## 已知边界

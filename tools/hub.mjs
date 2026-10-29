@@ -99,7 +99,29 @@ function writeState() {
   } catch { /* 状态写不了不影响服务 */ }
 }
 
-function statusPayload() {
+/** 从扩展拉一次最新 tabs，顺带更新已接入标签的标题/URL（页面导航后会变）。 */
+async function refreshTabsFromExtension() {
+  if (!state.extension) return
+  try {
+    const tabs = await callExtension('DSH.tabs', {}, undefined, 1500)
+    if (!Array.isArray(tabs)) return
+    state.extension.tabs = tabs
+    let changed = false
+    for (const [tabId, record] of state.attached) {
+      const tab = tabs.find((candidate) => Number(candidate.id) === Number(tabId))
+      if (!tab) continue
+      if (tab.title !== record.title || tab.url !== record.url) {
+        record.title = tab.title || ''
+        record.url = tab.url || ''
+        changed = true
+      }
+    }
+    if (changed) writeState()
+  } catch { /* 拉不到就用缓存 */ }
+}
+
+async function statusPayload() {
+  await refreshTabsFromExtension()
   return {
     service: 'dsh-web-devtools-hub',
     version: HUB_VERSION,
@@ -146,7 +168,74 @@ function callExtension(method, params = {}, tabId, timeoutMs = 60000) {
   })
 }
 
+// ---------------------------------------------------------------------------
+// 事件缓冲：chrome.debugger 的 Runtime/Log domain 一旦 enable 就不会再「回放历史」，
+// 而 DSH 每次读取都是新的 cdp 连接。所以 hub 自己缓存可回放事件，新连接接入时补发。
+// 这样「先报错、后读取」和「导航后继续读」都成立。
+// ---------------------------------------------------------------------------
+
+const REPLAYABLE_EVENTS = new Set([
+  'Runtime.consoleAPICalled',
+  'Runtime.exceptionThrown',
+  'Log.entryAdded',
+])
+
+const tabBuffers = new Map()
+let bufferBytes = 0
+const BUFFER_MAX_EVENTS = 600
+const BUFFER_MAX_BYTES = 2 * 1024 * 1024
+
+function rememberEvent(tabId, method, params) {
+  if (!REPLAYABLE_EVENTS.has(method)) return
+  const key = String(tabId)
+  let buffer = tabBuffers.get(key)
+  if (!buffer) {
+    buffer = { events: [], bytes: 0 }
+    tabBuffers.set(key, buffer)
+  }
+  const size = JSON.stringify(params || {}).length + 100
+  buffer.events.push({ method, params, size })
+  buffer.bytes += size
+  bufferBytes += size
+  while (buffer.events.length > BUFFER_MAX_EVENTS || buffer.bytes > BUFFER_MAX_BYTES / 2) {
+    const removed = buffer.events.shift()
+    buffer.bytes -= removed.size
+    bufferBytes -= removed.size
+  }
+  while (bufferBytes > BUFFER_MAX_BYTES && tabBuffers.size > 0) {
+    const [oldestKey, oldest] = tabBuffers.entries().next().value || []
+    if (!oldest || !oldest.events.length) break
+    const removed = oldest.events.shift()
+    oldest.bytes -= removed.size
+    bufferBytes -= removed.size
+    if (!oldest.events.length) tabBuffers.delete(oldestKey)
+  }
+}
+
+function clearTabBuffer(tabId) {
+  const key = String(tabId)
+  const buffer = tabBuffers.get(key)
+  if (!buffer) return
+  bufferBytes -= buffer.bytes
+  tabBuffers.delete(key)
+}
+
+function replayTo(conn, tabId) {
+  const buffer = tabBuffers.get(String(tabId))
+  if (!buffer) return
+  for (const event of buffer.events) {
+    conn.send({ method: event.method, params: event.params })
+  }
+}
+
 function broadcastEvent(tabId, method, params) {
+  // 主框架导航：旧页面的 console 历史作废
+  if (method === 'Page.frameNavigated') {
+    const frame = params && params.frame
+    if (frame && !frame.parentId && frame.loaderId) clearTabBuffer(tabId)
+  } else {
+    rememberEvent(tabId, method, params)
+  }
   const key = String(tabId)
   const connections = state.tabConnections.get(key)
   if (connections) {
@@ -187,6 +276,7 @@ async function detachTab(tabId) {
       await callExtension('DSH.detach', { tabId: Number(id) }, Number(id), 10000)
     } catch { /* 扩展可能已经断开 */ }
     state.attached.delete(id)
+    clearTabBuffer(id)
     detached.push(Number(id))
   }
   writeState()
@@ -251,6 +341,8 @@ function handleExtension(conn) {
     }
     state.tabConnections.clear()
     state.attached.clear()
+    tabBuffers.clear()
+    bufferBytes = 0
     writeState()
   })
 
@@ -269,6 +361,8 @@ function handleCdpConnection(conn, tabId) {
   if (key) {
     if (!state.tabConnections.has(key)) state.tabConnections.set(key, new Set())
     state.tabConnections.get(key).add(conn)
+    // 新连接接入：把之前缓存的 console/log 事件补发一遍（等价于 F12 的「历史回放」）
+    replayTo(conn, key)
   }
   conn.onClose(() => {
     if (!key) return
@@ -335,7 +429,7 @@ function route(request, response) {
   }
   ;(async () => {
     try {
-      if (request.method === 'GET' && url.pathname === '/status') return send(200, statusPayload())
+      if (request.method === 'GET' && url.pathname === '/status') return send(200, await statusPayload())
       if (request.method === 'GET' && url.pathname === '/health') return send(200, { ok: true, service: 'dsh-web-devtools-hub' })
       if (request.method === 'POST' && url.pathname === '/attach') {
         const body = await readJsonBody(request)

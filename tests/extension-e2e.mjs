@@ -18,7 +18,7 @@ const ROOT = path.join(HERE, '..')
 const CLI = path.join(ROOT, 'tools', 'devtools.mjs')
 const HUB = path.join(ROOT, 'tools', 'hub.mjs')
 const EXTENSION = path.join(ROOT, 'extension')
-const HUB_PORT = 9335
+const HUB_PORT = 9346
 const EDGE_DEBUG_PORT = 9446
 
 const EDGE_CANDIDATES = [
@@ -28,20 +28,21 @@ const EDGE_CANDIDATES = [
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
 ]
 
-const PAGE_HTML = `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>当前页测试</title></head>
+function pageHtml(title, logText) {
+  return `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>${title}</title></head>
 <body>
-  <h1 id="title">当前页测试</h1>
+  <h1 id="title">${title}</h1>
   <div id="app" data-testid="app-root">
     <ul class="list"><li class="item">甲</li><li class="item">乙</li></ul>
     <button id="btn">点我</button>
     <div id="out"></div>
   </div>
   <script>
-    console.log('当前页加载：日志', { where: 'live' })
-    console.warn('当前页警告')
-    console.error('当前页错误')
-    setTimeout(() => console.log('延迟日志'), 400)
+    console.log('${logText}', { where: 'live' })
+    console.warn('${title}警告')
+    console.error('${title}错误')
+    setTimeout(() => console.log('${title}延迟日志'), 400)
     window.__answer = 42
     document.getElementById('btn').addEventListener('click', () => {
       document.getElementById('out').textContent = '已点击'
@@ -49,6 +50,9 @@ const PAGE_HTML = `<!doctype html>
     })
   </script>
 </body></html>`
+}
+
+const PAGE_HTML = pageHtml('当前页测试', '当前页加载：日志')
 
 const checks = []
 function check(name, ok, detail = '') {
@@ -114,8 +118,12 @@ async function main() {
   }
 
   const server = http.createServer((request, response) => {
+    const pathname = String(request.url || '/').split('?')[0]
+    const html = pathname.startsWith('/next')
+      ? pageHtml('第二页', '第二页加载')
+      : PAGE_HTML
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    response.end(PAGE_HTML)
+    response.end(html)
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const sitePort = server.address().port
@@ -124,6 +132,14 @@ async function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-live-e2e-'))
   const profileDir = path.join(tempRoot, 'edge-profile')
   const stateHome = path.join(tempRoot, 'dsh-home')
+  // 复制一份扩展并把默认 hub 端口改成测试端口，避免干扰用户日常正在用的扩展/hub
+  const extensionCopy = path.join(tempRoot, 'extension')
+  fs.cpSync(EXTENSION, extensionCopy, { recursive: true })
+  const backgroundPath = path.join(extensionCopy, 'background.js')
+  fs.writeFileSync(
+    backgroundPath,
+    fs.readFileSync(backgroundPath, 'utf8').replace('const DEFAULT_HUB_PORT = 9335', `const DEFAULT_HUB_PORT = ${HUB_PORT}`),
+  )
   fs.mkdirSync(profileDir, { recursive: true })
   fs.mkdirSync(stateHome, { recursive: true })
   const env = { DSH_HOME: stateHome }
@@ -150,8 +166,8 @@ async function main() {
     // 2. 启动 Edge（加载扩展、打开测试页）
     const edgeArgs = [
       `--user-data-dir=${profileDir}`,
-      `--load-extension=${EXTENSION}`,
-      `--disable-extensions-except=${EXTENSION}`,
+      `--load-extension=${extensionCopy}`,
+      `--disable-extensions-except=${extensionCopy}`,
       '--disable-features=DisableLoadExtensionCommandLineSwitch',
       `--remote-debugging-port=${EDGE_DEBUG_PORT}`,
       '--no-first-run',
@@ -179,7 +195,7 @@ async function main() {
     const consoleResult = await runCli({ op: 'console', target: 'current', level: 'all', wait_ms: 900, config: { hubPort: HUB_PORT, autoStartHub: false } }, env)
     const consoleText = String(consoleResult.text || '')
     check('console 回放到日志', consoleText.includes('当前页加载：日志'), consoleText)
-    check('console 回放到 error', consoleText.includes('当前页错误'), consoleText)
+    check('console 回放到 error', consoleText.includes('当前页测试错误'), consoleText)
     check('console 回放到延迟日志', consoleText.includes('延迟日志'), consoleText)
 
     const dom = await runCli({ op: 'dom', target: 'current', selector: '#app', mode: 'outline', depth: 3, config: { hubPort: HUB_PORT, autoStartHub: false } }, env)
@@ -198,7 +214,25 @@ async function main() {
     const shotPath = (String(shot.text || '').match(/截图已保存：(.+)/) || [])[1]
     check('screenshot 落盘', Boolean(shotPath) && fs.existsSync(shotPath.trim()) && fs.statSync(shotPath.trim()).size > 500, shot.text || shot.error)
 
-    // 5. 断开
+    // 5. 同标签页跳转：整页导航后应继续有效，不需要断开重接
+    const beforeNav = await hubStatus()
+    const attachedTabId = beforeNav && beforeNav.attached && beforeNav.attached[0] ? beforeNav.attached[0].tabId : null
+    check('接入的是测试页（不是用户浏览器）', Boolean(beforeNav && beforeNav.attached && beforeNav.attached[0] && String(beforeNav.attached[0].title).includes('当前页测试')), JSON.stringify(beforeNav && beforeNav.attached))
+    const navEval = await runCli({ op: 'eval', target: 'current', expression: "location.href = '/next'", config: { hubPort: HUB_PORT, autoStartHub: false } }, env)
+    await sleep(2500)
+    const afterNavTitle = await runCli({ op: 'eval', target: 'current', expression: 'document.title', config: { hubPort: HUB_PORT, autoStartHub: false } }, env)
+    const afterNav = await runCli({ op: 'console', target: 'current', level: 'all', wait_ms: 800, config: { hubPort: HUB_PORT, autoStartHub: false } }, env)
+    check('整页导航后无需重接即可读', String(afterNav.text || '').includes('第二页加载'), afterNav.text || afterNav.error)
+    const statusAfterNav = await hubStatus()
+    check('attached 仍是同一个 tab', Boolean(attachedTabId) && statusAfterNav && statusAfterNav.attached && statusAfterNav.attached[0] && Number(statusAfterNav.attached[0].tabId) === Number(attachedTabId), JSON.stringify(statusAfterNav && statusAfterNav.attached))
+
+    // 6. SPA 路由跳转后也应继续有效
+    const spaEval = await runCli({ op: 'eval', target: 'current', expression: "history.pushState({}, '', '/spa'); console.log('SPA 后的日志')", config: { hubPort: HUB_PORT, autoStartHub: false } }, env)
+    await sleep(500)
+    const afterSpa = await runCli({ op: 'console', target: 'current', level: 'all', wait_ms: 600, config: { hubPort: HUB_PORT, autoStartHub: false } }, env)
+    check('SPA 路由后无需重接即可读', String(afterSpa.text || '').includes('SPA 后的日志'), afterSpa.text || afterSpa.error)
+
+    // 7. 断开
     const detach = await runCli({ op: 'live-detach', config: { hubPort: HUB_PORT, autoStartHub: false } }, env)
     check('live-detach 成功', String(detach.text || '').includes('已断开'), detach.text || detach.error)
   } catch (error) {

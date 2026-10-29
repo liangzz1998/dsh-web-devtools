@@ -38,5 +38,7 @@
         hubPort: 9335
         # 插件加载时是否自动拉起 hub（让浏览器扩展一启动就能连上）
         autoStartHub: true
+        # target="current" 时是否跟随当前活动标签页（换标签/新开页后自动切过去）
+        followActiveTab: true
         # 单次操作默认超时（毫秒）
         timeoutMs: 60000

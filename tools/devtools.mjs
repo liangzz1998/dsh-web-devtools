@@ -132,12 +132,29 @@ async function resolveLivePage(cfg, hubPort) {
     throw new Error('浏览器扩展还没连接：请在浏览器里点开「DSH Web DevTools Bridge」扩展图标 → 点「接入当前标签页」。'
       + '如果 hub 端口改过，在扩展 popup 里把端口改成 ' + hubPort + '。')
   }
-  let attached = Array.isArray(status.attached) ? status.attached : []
-  if (!attached.length) {
-    const result = await live.attachLive(hubPort)
-    attached = [{ tabId: result.tabId, title: result.title, url: result.url }]
+  const attached = Array.isArray(status.attached) ? status.attached : []
+  const tabs = (status.extension && status.extension.tabs) || status.tabs || []
+  const activeTab = tabs.find((tab) => tab && tab.active && typeof tab.id === 'number')
+  const followActive = cfg.followActiveTab !== false
+  let current = attached[0] || null
+
+  // 默认跟随「当前活动标签页」：同标签内跳转 tabId 不变（无需处理）；
+  // 用户点入口开了新标签/切了标签时，自动把调试会话切到新活动标签，不用手动断开重接。
+  if (followActive && activeTab && (!current || Number(current.tabId) !== Number(activeTab.id))) {
+    if (attached.length) {
+      try { await live.detachLive(hubPort) } catch { /* 旧会话可能已经没了 */ }
+    }
+    try {
+      const result = await live.attachLive(hubPort, activeTab.id)
+      current = { tabId: result.tabId, title: result.title, url: result.url }
+    } catch (error) {
+      if (!current) throw error
+    }
   }
-  const current = attached[0]
+  if (!current) {
+    const result = await live.attachLive(hubPort)
+    current = { tabId: result.tabId, title: result.title, url: result.url }
+  }
   return {
     live: true,
     port: hubPort,
@@ -148,7 +165,7 @@ async function resolveLivePage(cfg, hubPort) {
       url: current.url || '',
       ws: `ws://127.0.0.1:${hubPort}/cdp?tab=${current.tabId}`,
     },
-    pages: attached.map((item) => ({ id: String(item.tabId), title: item.title || '', url: item.url || '', ws: '' })),
+    pages: [{ id: String(current.tabId), title: current.title || '', url: current.url || '', ws: '' }],
   }
 }
 
