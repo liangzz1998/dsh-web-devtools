@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>DSH Web DevTools Bridge</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      width: 340px;
+      margin: 0;
+      padding: 12px;
+      font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #0f1115;
+      color: #e6e8ee;
+    }
+    h1 { margin: 0 0 8px; font-size: 14px; font-weight: 600; letter-spacing: .2px; }
+    .row { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; flex: none; }
+    .dot.ok { background: #22c55e; }
+    .dot.bad { background: #ef4444; }
+    .muted { color: #9aa3b2; font-size: 12px; }
+    .card { background: #171a21; border: 1px solid #262b36; border-radius: 8px; padding: 10px; margin: 8px 0; }
+    .url { color: #9aa3b2; font-size: 11px; word-break: break-all; }
+    button {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid #2d3442;
+      background: #1d2430;
+      color: #e6e8ee;
+      font-size: 13px;
+      cursor: pointer;
+      margin-top: 6px;
+    }
+    button.primary { background: #2563eb; border-color: #2563eb; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    input {
+      width: 80px;
+      padding: 4px 6px;
+      border-radius: 5px;
+      border: 1px solid #2d3442;
+      background: #0f1115;
+      color: #e6e8ee;
+    }
+    .tip { margin-top: 8px; font-size: 11px; color: #8b94a6; line-height: 1.5; }
+    code { background: #1d2430; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>DSH Web DevTools Bridge</h1>
+
+  <div class="row"><span id="hubDot" class="dot"></span><span id="hubText" class="muted">正在检查 hub…</span></div>
+
+  <div class="card">
+    <div class="muted">当前标签页</div>
+    <div id="tabTitle">—</div>
+    <div id="tabUrl" class="url"></div>
+  </div>
+
+  <div class="card">
+    <div class="muted">已接入 DSH 的标签页</div>
+    <div id="attached">—</div>
+  </div>
+
+  <button id="attachBtn" class="primary">接入当前标签页</button>
+  <button id="detachBtn">断开全部</button>
+
+  <div class="row" style="margin-top:10px">
+    <span class="muted">hub 端口</span>
+    <input id="portInput" type="number" min="1" max="65535">
+    <button id="savePort" style="width:auto;margin:0;padding:4px 8px">保存</button>
+  </div>
+
+  <div class="tip">
+    接入后标签页顶部会出现「正在调试此标签页」提示，这是 CDP 的正常行为；
+    点提示上的「取消」或这里的「断开」即可结束。同一标签页不能同时开 F12。
+    需要先在 DSH 里让插件启动 hub（调用 <code>devtools_live_status</code> 或 <code>devtools_live_attach</code>）。
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

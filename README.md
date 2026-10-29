@@ -5,7 +5,14 @@
 1. **看懂一个陌生网页**：它是干什么的、有什么内容和功能、DOM 长什么样
 2. **给这个网页写自动化 / 爬虫脚本**：元素定位器、刚发生了什么、登录态在哪、文件怎么下载
 
-基于 Chrome DevTools Protocol（CDP）——和 F12 面板用的是同一套协议，零第三方依赖。
+两条读取通道：
+
+| 通道 | 读谁的页面 | 要不要装东西 |
+|---|---|---|
+| **专用浏览器**（默认） | 插件自己拉起的 Edge/Chrome 实例，独立 profile | 不用，开箱即用 |
+| **浏览器扩展**（`target="current"`） | **你当前正在浏览的标签页**（你自己日常的浏览器） | 装一次扩展（加载解压缩目录即可） |
+
+两条通道底层都是 Chrome DevTools Protocol（CDP）——和 F12 面板用的是同一套协议，零第三方依赖。
 
 ```
 用户：这个网站我要写个自动导出报表的脚本
@@ -18,7 +25,7 @@ agent → devtools_summary   ← 页面是干什么的、表单/按钮/表格
 
 ---
 
-## 工具（14 个）
+## 工具（17 个）
 
 ### 看懂页面
 | 工具 | 作用 |
@@ -39,30 +46,80 @@ agent → devtools_summary   ← 页面是干什么的、表单/按钮/表格
 | `devtools_storage` | **登录态**：localStorage / sessionStorage / cookie，标出疑似 token/JWT |
 | `devtools_download` | **下载文件**：`url` 直接下载（自动带浏览器 cookie），或 `selector` 点页面上的下载/导出按钮 |
 
-## 下载是怎么做的
+### 读你当前正在浏览的页面（扩展）
+| 工具 | 作用 |
+|---|---|
+| `devtools_live_status` | 扩展桥状态：hub 是否在跑、扩展是否连上、已接入哪些标签页、浏览器里开了哪些标签 |
+| `devtools_live_attach` | 把扩展接入一个标签页（不传 id = 当前活动标签页） |
+| `devtools_live_detach` | 断开（页面顶部「正在调试」提示消失） |
 
-- `url` 模式：先取浏览器里对该域生效的 cookie，用 Node 直接请求并落盘（图片 / PDF / CSV / 接口 JSON 都行）；失败再退回浏览器下载通道。
-- `selector` 模式：`Browser.setDownloadBehavior` 打开下载通道 → 真实点击页面元素 → 监听 `Browser.downloadWillBegin/downloadProgress` → 等文件落盘。
-- 文件默认存到会话工作区的 `downloads/`，返回绝对路径；重名自动加 `(1)`。
+接入之后，所有读取工具都能用 **`target="current"`** 读你当前浏览器里的那个页面：
+`devtools_console` / `devtools_dom` / `devtools_eval` / `devtools_summary` / `devtools_find` / `devtools_activity` / `devtools_storage` / `devtools_screenshot`。
 
 ---
 
-## 为什么不是「浏览器扩展」
+## 怎么读「我当前正在浏览的页面」
 
-扩展要手动装、只能读自己页面、还要写消息中转。CDP 是浏览器自带的调试通道：
-一个 `--remote-debugging-port` 就能拿到 F12 同款数据，并且能注入记录器、触发下载。
+### 原理
 
-## 浏览器从哪来
+浏览器扩展有 `chrome.debugger` API —— 它就是 F12 用的那套 CDP，可以 attach 到任意标签页。
+所以链路是：
 
-插件会**自己拉起一个专用浏览器实例**（Edge 或 Chrome）：
+```
+你的浏览器（你正在看的标签页）
+   │  扩展：chrome.debugger.attach(tabId)  → 收/发 CDP
+   │  WebSocket  ws://127.0.0.1:9335/ext
+   ▼
+hub（插件自带的小进程，tools/hub.mjs）
+   │  把扩展的 CDP 会话代理成标准 CDP：ws://127.0.0.1:9335/cdp?tab=…
+   ▼
+DSH 插件（lib/cdp.mjs 原样复用）
+```
+
+### 一次性安装扩展（约 30 秒）
+
+1. 打开浏览器扩展页：Edge 地址栏输入 `edge://extensions`（Chrome 是 `chrome://extensions`）
+2. 打开右下角（或左侧）的 **开发者模式**
+3. 点 **加载解压缩的扩展**，选择目录：
+
+   ```
+   D:\dsh-plugins\dsh-web-devtools\extension
+   ```
+
+4. 装好后可以把它固定到工具栏
+
+> 这个扩展不会自动更新，以后插件升级时重新点一下「重新加载」即可。
+> 扩展权限说明：`debugger`（读开发者工具）、`tabs`（知道当前标签页）、`storage`（记住 hub 端口）。
+
+### 使用
+
+1. 在 DSH 里说「读一下我当前这个页面」，agent 调 `devtools_live_status`（会自动拉起 hub）
+2. 你点浏览器工具栏上的扩展图标 → **接入当前标签页**
+3. 之后 agent 用 `target="current"` 读控制台 / DOM / 网络 / 元素定位器 / 截图
+4. 读完后点扩展 popup 的「断开」，或让 agent 调 `devtools_live_detach`
+
+也可以反过来：先让 agent 调 `devtools_live_attach`，它会自动接入你当前活动的标签页。
+
+### 限制（重要）
+
+- 接入时标签页顶部会出现 **「正在调试此标签页」** 黄条，这是 chrome.debugger 的正常提示；点黄条上的「取消」或 popup 里的「断开」即可结束
+- **同一个标签页不能同时开 F12**：一个标签页同一时刻只能被一个调试器占用；如果报「无法附加调试器」，先关掉该页的 F12
+- **不能下载文件**：chrome.debugger 只有标签页级会话，不能设置浏览器下载通道；要下载请用专用浏览器模式（`devtools_download` 不带 `target="current"`）
+- 只能读「当前可见、已加载」的标签页；跨 iframe / Shadow DOM 的操作看不到
+- 扩展后台（MV3 service worker）可能被浏览器回收，会自动重连；hub 每 20 秒心跳保活
+- 截图依赖标签页可见；最小化/后台标签可能截到空白
+
+---
+
+## 专用浏览器（默认通道）
+
+插件会自己拉起一个专用浏览器实例（Edge 或 Chrome）：
 
 - 独立 profile 目录：`%LOCALAPPDATA%\dsh-web-devtools\browser-profile`（登录态会保存）
 - **不会影响你平时用的 Edge/Chrome**，也不要求你先关掉它
 - 第一次调用任意工具时自动启动；之后一直复用
 - 端口默认 `9333`；`cdpPort` 指向别的 Chromium 程序（比如豆包 9225）也能读
-
-> Chrome/Edge 出于安全考虑不允许在「默认 profile」上开调试端口，所以用独立 profile。
-> 需要某网站的登录态，在插件拉起的窗口里登录一次即可，下次还在。
+- 下载文件走浏览器下载通道，完全可用
 
 ### 多标签页怎么选
 
@@ -92,22 +149,18 @@ V8ConsoleMessageStorage 会重放，含对象内容），所以不需要常驻�
 ### 方式一：从 GitHub 安装（推荐）
 
 ```powershell
-# 把插件装进 desktop profile（会写入依赖并加进 bundles）
 dsh plugin --profile desktop add "github:liangzz1998/dsh-web-devtools"
-
 # 重启 DeepSeek Harness 生效（启用 HMR 的 profile 保存配置即热加载）
 ```
 
 ### 方式二：本地源码 link（开发用）
 
 ```powershell
-# 1. 链接进 desktop profile 的 node_modules
 New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-web-devtools" `
   -Target "D:\dsh-plugins\dsh-web-devtools"
 
-# 2. 在 ~/.dsh/profiles/desktop/cordis.patch.yml 里挂载（见本仓库 cordis.patch.yml 的 insert 段）
-
-# 3. 重启 DeepSeek Harness 生效
+# 再在 ~/.dsh/profiles/desktop/cordis.patch.yml 里挂载（见本仓库 cordis.patch.yml 的 insert 段）
+# 重启 DeepSeek Harness 生效
 ```
 
 ## 配置
@@ -115,14 +168,16 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\desktop\node_m
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 关掉 = 不注册任何工具 |
-| `cdpPort` | `9333` | CDP 调试端口 |
+| `cdpPort` | `9333` | 专用浏览器的 CDP 调试端口 |
 | `browser` | `''` | 浏览器 exe，留空自动探测 Edge/Chrome |
-| `userDataDir` | `''` | 浏览器 profile 目录，留空用 `%LOCALAPPDATA%\dsh-web-devtools\browser-profile` |
-| `headless` | `false` | 是否无头运行（默认弹窗，方便看着 agent 操作） |
-| `autoLaunch` | `true` | CDP 离线时读取类工具是否自动拉起浏览器 |
+| `userDataDir` | `''` | 专用浏览器 profile 目录 |
+| `headless` | `false` | 专用浏览器是否无头 |
+| `autoLaunch` | `true` | CDP 离线时是否自动拉起专用浏览器 |
 | `outSubdir` | `web-devtools` | 截图在会话工作区里的子目录 |
 | `downloadSubdir` | `downloads` | 下载文件在会话工作区里的子目录 |
 | `autoRecord` | `true` | 是否自动注入页面记录器 |
+| `hubPort` | `9335` | 扩展桥 hub 端口（扩展 popup 里可改） |
+| `autoStartHub` | `true` | 插件加载时是否自动拉起 hub |
 | `timeoutMs` | `60000` | 单次操作默认超时 |
 
 ---
@@ -130,38 +185,33 @@ New-Item -ItemType Junction -Path "$env:USERPROFILE\.dsh\profiles\desktop\node_m
 ## 工作原理 / 目录
 
 ```
-lib/index.js        DSH 插件入口：注册 14 个工具，调用子进程
+lib/index.js        DSH 插件入口：注册 17 个工具，调用子进程
 lib/cdp.mjs         CDP 传输层与全部底层能力（零依赖，Node 内置 fetch/WebSocket）
+lib/live.mjs        扩展桥封装：hub 状态 / 拉起 hub / attach·detach
 lib/page/*.js       页面侧脚本：recorder / summary / find / storage（由 CDP 注入执行）
 lib/resolve-node.mjs 找到一个真 node（DSH 主进程是 Electron，不能直接跑脚本）
 tools/devtools.mjs  子进程 CLI：stdin 收 JSON，stdout 回 JSON（带人话排版）
-tests/e2e.mjs       端到端测试：真无头浏览器跑全部工具（52 项断言）
-```
-
-运行时调用链：
-
-```
-agent → devtools_find 工具
-      → spawn node tools/devtools.mjs
-      → 连 127.0.0.1:9333 的 CDP WebSocket
-      → 注入 lib/page/find.js 并取回结构化结果
-      → 文本结果回给 agent
+tools/hub.mjs       扩展桥 hub：接扩展 WebSocket、代理成标准 CDP、HTTP 管理接口
+tools/ws.mjs        零依赖 WebSocket 服务端实现（RFC 6455 子集）
+extension/          浏览器扩展（MV3）：chrome.debugger → hub
+tests/e2e.mjs       专用浏览器端到端测试（55 项断言）
+tests/extension-e2e.mjs 扩展桥端到端测试：真 Edge + --load-extension 读「当前页」（13 项断言）
 ```
 
 ## 测试
 
 ```powershell
 cd D:\dsh-plugins\dsh-web-devtools
-node tests/e2e.mjs
-# 52/52 通过 → ALL PASS
+node tests/e2e.mjs           # 专用浏览器：55/55
+node tests/extension-e2e.mjs # 扩展桥读当前页：13/13（会自动起一个临时 Edge，不动你日常浏览器）
 ```
 
 ## 已知边界
 
-- 记录器只装在主页面：iframe / Shadow DOM 里的操作看不到（可用 `target` 换页，但跨 frame 需要单独处理）
-- `network` 的 history 只有资源计时；live 有方法/状态/耗时/大小，但不含请求/响应体
-- `storage` 读不到 HttpOnly cookie；纯内存 token（如某些 SPA 的闭包变量）也不在 storage 里
+- 扩展模式读不到 iframe / Shadow DOM 里的内容；只有标签页级会话
+- 记录器只装在主页面；`network` 不含请求/响应体
+- `storage` 读不到 HttpOnly cookie；纯内存 token 也不在 storage 里
 - 控制台回放的对象只展开第一层属性（最多 12 个）
 - 浏览器进程重启前的日志读不到（日志存在页面进程里）
-- `download` 的 `url` 模式依赖 cookie；需要特殊 header/签名的下载请用 `selector` 点页面按钮
 - 无头模式可能被部分站点指纹检测拦，必要时 `headless: false`
+- 关闭扩展或浏览器后，`target="current"` 会报「扩展未连接」，重新点扩展图标接入即可

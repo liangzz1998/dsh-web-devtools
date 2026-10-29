@@ -125,8 +125,8 @@ async function main() {
     }
 
     console.log('\n[1] 工具注册')
-    check(`注册了 14 个工具（实际 ${tools.size}）`, tools.size === 14)
-    for (const name of ['devtools_status', 'devtools_launch', 'devtools_pages', 'devtools_open', 'devtools_console', 'devtools_dom', 'devtools_eval', 'devtools_network', 'devtools_screenshot', 'devtools_summary', 'devtools_find', 'devtools_activity', 'devtools_storage', 'devtools_download']) {
+    check(`注册了 17 个工具（实际 ${tools.size}）`, tools.size === 17)
+    for (const name of ['devtools_status', 'devtools_launch', 'devtools_pages', 'devtools_open', 'devtools_console', 'devtools_dom', 'devtools_eval', 'devtools_network', 'devtools_screenshot', 'devtools_summary', 'devtools_find', 'devtools_activity', 'devtools_storage', 'devtools_download', 'devtools_live_status', 'devtools_live_attach', 'devtools_live_detach']) {
       check(`有 ${name}`, tools.has(name))
     }
 

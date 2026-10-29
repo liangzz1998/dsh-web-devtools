@@ -12,6 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as cdp from '../lib/cdp.mjs'
+import * as live from '../lib/live.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 
@@ -86,6 +87,10 @@ function writeState(patch) {
 }
 
 async function resolvePage(cfg, target) {
+  const hubPort = clamp(cfg.hubPort, 1, 65535, live.DEFAULT_HUB_PORT)
+  if (String(target || '').trim() === 'current') {
+    return resolveLivePage(cfg, hubPort)
+  }
   const port = clamp(cfg.cdpPort, 1, 65535, cdp.DEFAULT_PORT)
   const info = await cdp.ensureBrowser({ ...cfg, cdpPort: port })
   const pages = await cdp.listPages(port)
@@ -114,6 +119,39 @@ async function resolvePage(cfg, target) {
   return { port, page, info, pages }
 }
 
+/**
+ * target="current"：走扩展桥读用户当前浏览的标签页。
+ * hub 没起就拉起来；扩展没连就给出明确提示；还没 attach 就自动 attach 当前活动标签。
+ */
+async function resolveLivePage(cfg, hubPort) {
+  const status = await live.ensureHub({ port: hubPort, autoStart: cfg.autoStartHub !== false })
+  if (!status.online) {
+    throw new Error('扩展桥 hub 没起来（' + (status.error || '未知错误') + '）。先调用 devtools_live_status 看看状态。')
+  }
+  if (!status.extensionConnected) {
+    throw new Error('浏览器扩展还没连接：请在浏览器里点开「DSH Web DevTools Bridge」扩展图标 → 点「接入当前标签页」。'
+      + '如果 hub 端口改过，在扩展 popup 里把端口改成 ' + hubPort + '。')
+  }
+  let attached = Array.isArray(status.attached) ? status.attached : []
+  if (!attached.length) {
+    const result = await live.attachLive(hubPort)
+    attached = [{ tabId: result.tabId, title: result.title, url: result.url }]
+  }
+  const current = attached[0]
+  return {
+    live: true,
+    port: hubPort,
+    info: { alive: true, browser: (status.extension && status.extension.browser) || '' },
+    page: {
+      id: String(current.tabId),
+      title: current.title || '',
+      url: current.url || '',
+      ws: `ws://127.0.0.1:${hubPort}/cdp?tab=${current.tabId}`,
+    },
+    pages: attached.map((item) => ({ id: String(item.tabId), title: item.title || '', url: item.url || '', ws: '' })),
+  }
+}
+
 async function opStatus(cfg) {
   const port = clamp(cfg.cdpPort, 1, 65535, cdp.DEFAULT_PORT)
   const info = await cdp.cdpVersion(port)
@@ -133,6 +171,21 @@ async function opStatus(cfg) {
   pages.forEach((page, index) => {
     lines.push(`  [${index}] ${page.title || '(无标题)'} — ${page.url}`)
   })
+
+  // 扩展桥状态：读「用户当前浏览的标签页」那条路
+  const hubPort = clamp(cfg.hubPort, 1, 65535, live.DEFAULT_HUB_PORT)
+  const hub = await live.hubStatus(hubPort, 1500).catch(() => ({ online: false }))
+  lines.push('')
+  lines.push('扩展桥（读取你当前浏览的页面）：')
+  if (!hub.online) {
+    lines.push('  hub：离线（调用 devtools_live_status 会启动它）')
+  } else {
+    lines.push(`  hub：在线 v${hub.version || '?'}  ·  端口 ${hubPort}`)
+    lines.push(`  扩展：${hub.extensionConnected ? '已连接 ✅' : '未连接（去浏览器点开「DSH Web DevTools Bridge」扩展图标）'}`)
+    const attached = hub.attached || []
+    lines.push(`  已接入：${attached.length ? attached.map((item) => '#' + item.tabId + ' ' + (item.title || item.url)).join('；') : '无'}`)
+  }
+
   if (!info.alive) {
     lines.push('')
     lines.push(exe ? '提示：调用 devtools_launch 启动浏览器；读控制台/DOM 的工具也会自动拉起它。' : '提示：先安装 Edge 或 Chrome，或在插件配置里把 browser 指到浏览器 exe。')
@@ -141,6 +194,61 @@ async function opStatus(cfg) {
     lines.push('提示：还没有页面，调用 devtools_open 打开一个 URL。')
   }
   return lines.join('\n')
+}
+
+async function opLiveStatus(cfg) {
+  const hubPort = clamp(cfg.hubPort, 1, 65535, live.DEFAULT_HUB_PORT)
+  const status = await live.ensureHub({ port: hubPort, autoStart: cfg.autoStartHub !== false })
+  const lines = ['扩展桥 · 读取你当前浏览器里正在看的页面']
+  if (!status.online) {
+    lines.push('hub：离线 ❌' + (status.error ? '（' + status.error + '）' : ''))
+    lines.push('提示：检查端口 ' + hubPort + ' 是否被占用；日志在 ' + path.join(live.stateDir(), 'hub.log'))
+    return lines.join('\n')
+  }
+  lines.push(`hub：在线 ✅  端口 ${hubPort}  v${status.version || '?'}`)
+  lines.push(`扩展：${status.extensionConnected ? '已连接 ✅' : '未连接 ❌（在浏览器里点开「DSH Web DevTools Bridge」扩展图标 → 点「接入当前标签页」）'}`)
+  if (status.extension && status.extension.browser) lines.push('浏览器：' + String(status.extension.browser).slice(0, 160))
+  const attached = status.attached || []
+  lines.push('已接入：' + (attached.length
+    ? attached.map((item) => `#${item.tabId} ${item.title || item.url}${item.idleMs ? '（空闲 ' + Math.round(item.idleMs / 1000) + 's）' : ''}`).join('；')
+    : '无'))
+  const tabs = (status.extension && status.extension.tabs) || status.tabs || []
+  if (tabs.length) {
+    lines.push('')
+    lines.push(`浏览器标签页（${tabs.length}）：`)
+    for (const tab of tabs.slice(0, 20)) {
+      lines.push(`  ${tab.active ? '▶' : ' '} #${tab.id} ${tab.title || '(无标题)'} — ${tab.url || ''}`)
+    }
+  }
+  lines.push('')
+  lines.push('下一步：devtools_live_attach 接入当前页（或指定 tab_id），然后用 devtools_console / devtools_dom / devtools_find 等，target 传 "current"。')
+  return lines.join('\n')
+}
+
+async function opLiveAttach(cfg, payload) {
+  const hubPort = clamp(cfg.hubPort, 1, 65535, live.DEFAULT_HUB_PORT)
+  const status = await live.ensureHub({ port: hubPort, autoStart: cfg.autoStartHub !== false })
+  if (!status.online) throw new Error('hub 没起来：' + (status.error || '未知错误'))
+  if (!status.extensionConnected) {
+    throw new Error('扩展未连接：请在浏览器里点开「DSH Web DevTools Bridge」扩展图标 → 点「接入当前标签页」。'
+      + '如果 hub 端口不是 ' + hubPort + '，在扩展 popup 里改端口。')
+  }
+  const result = await live.attachLive(hubPort, payload.tab_id)
+  return [
+    `已接入标签页 #${result.tabId}：${result.title || '(无标题)'}`,
+    `URL：${result.url || ''}`,
+    '现在可以用 target="current" 读它：devtools_console / devtools_dom / devtools_find / devtools_activity / devtools_storage / devtools_screenshot 都支持。',
+    '注意：接入期间标签页顶部会有「正在调试此标签页」提示，且不能同时开 F12；读完可调 devtools_live_detach 断开。',
+  ].join('\n')
+}
+
+async function opLiveDetach(cfg, payload) {
+  const hubPort = clamp(cfg.hubPort, 1, 65535, live.DEFAULT_HUB_PORT)
+  const status = await live.hubStatus(hubPort)
+  if (!status.online) return 'hub 没在运行，没有需要断开的标签页。'
+  const result = await live.detachLive(hubPort, payload.tab_id)
+  const list = Array.isArray(result.detached) ? result.detached : []
+  return list.length ? `已断开 ${list.length} 个标签页：${list.map((id) => '#' + id).join(', ')}` : '没有已接入的标签页。'
 }
 
 async function opLaunch(cfg, payload) {
@@ -656,6 +764,10 @@ async function opStorage(cfg, payload) {
 }
 
 async function opDownload(cfg, payload) {
+  if (String(payload.target || '').trim() === 'current') {
+    throw new Error('扩展模式（target="current"）不支持下载：chrome.debugger 只有标签页级会话，不能设置浏览器下载通道。'
+      + '要下载文件请用专用浏览器模式（不传 target="current"）调用 devtools_download。')
+  }
   const port = clamp(cfg.cdpPort, 1, 65535, cdp.DEFAULT_PORT)
   const outDir = payload.dir ? path.resolve(String(payload.dir)) : path.join(process.cwd(), cfg.downloadSubdir || 'downloads')
   const { page } = await resolvePage(cfg, payload.target)
@@ -700,6 +812,9 @@ async function dispatch(payload) {
     case 'activity': return opActivity(cfg, payload)
     case 'storage': return opStorage(cfg, payload)
     case 'download': return opDownload(cfg, payload)
+    case 'live-status': return opLiveStatus(cfg)
+    case 'live-attach': return opLiveAttach(cfg, payload)
+    case 'live-detach': return opLiveDetach(cfg, payload)
     default: throw new Error(`未知操作：${payload.op}`)
   }
 }

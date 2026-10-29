@@ -34,5 +34,9 @@
         downloadSubdir: downloads
         # 是否自动注入页面记录器（点击/输入/请求/DOM 变化）
         autoRecord: true
+        # 扩展桥 hub 端口（读「你当前浏览的标签页」用；扩展 popup 里可改）
+        hubPort: 9335
+        # 插件加载时是否自动拉起 hub（让浏览器扩展一启动就能连上）
+        autoStartHub: true
         # 单次操作默认超时（毫秒）
         timeoutMs: 60000
